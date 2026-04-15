@@ -1,0 +1,6 @@
+google-credentials.json
+*.xml
+__pycache__/
+*.pyc
+.DS_Store
+feed_log.txt

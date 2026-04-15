@@ -1,0 +1,28 @@
+name: Update Shopping Feed
+
+on:
+  schedule:
+    - cron: '0 1 * * *'  # Joka päivä 01:00 UTC = 03:00 Helsinki-aikaa
+  workflow_dispatch:       # Mahdollistaa myös manuaalisen ajon
+
+jobs:
+  update-feed:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install gspread google-auth
+
+      - name: Write Google credentials
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > google-shopping-feed/google-credentials.json
+
+      - name: Run feed generator
+        run: python3 google-shopping-feed/generate_feed.py
