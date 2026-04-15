@@ -235,7 +235,16 @@ def push_to_sheets(products: list) -> None:
     print("Pushataan Google Sheetsiin...")
 
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
+
+    # GitHub Actions: credentials ympäristömuuttujasta
+    # Lokaali ajo: credentials tiedostosta
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+    if creds_json:
+        import json as _json
+        creds = Credentials.from_service_account_info(_json.loads(creds_json), scopes=scopes)
+    else:
+        creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
+
     client = gspread.authorize(creds)
     sheet = client.open_by_key(SPREADSHEET_ID).sheet1
 
