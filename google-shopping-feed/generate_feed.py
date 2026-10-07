@@ -23,11 +23,37 @@ from google.oauth2.service_account import Credentials
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
-STORE_URL = "https://pomar.fi"
-OUTPUT_FILE = "pomar_google_shopping_feed.xml"
 G = "http://base.google.com/ns/1.0"
 SPREADSHEET_ID = "1n5R9_Ae_T-9GuzuoTbymT7FgomrpM75Q_SWHCDYP51Q"
 CREDENTIALS_FILE = os.path.join(os.path.dirname(__file__), "google-credentials.json")
+
+MARKETS = [
+    {
+        "store_url": "https://pomar.fi",
+        "sheet_tab": "FI",
+        "spreadsheet_id": "1n5R9_Ae_T-9GuzuoTbymT7FgomrpM75Q_SWHCDYP51Q",
+        "currency": "EUR",
+        "output_file": "pomar_google_shopping_feed_fi.xml",
+    },
+    {
+        "store_url": "https://www.pomarshoes.com",
+        "sheet_tab": "EN",
+        "spreadsheet_id": "1WG2tKwc34l3LimrYf343L3o4L4rKKk-ZAKl7C69L-Rk",
+        "currency": "EUR",
+        "output_file": "pomar_google_shopping_feed_en.xml",
+    },
+    {
+        "store_url": "https://www.pomarshoes.de",
+        "sheet_tab": "DE",
+        "spreadsheet_id": "1fPj8CnTInnwvTT2BmDIuUJJqTQbM__FlHY_q_RpcfMA",
+        "currency": "EUR",
+        "output_file": "pomar_google_shopping_feed_de.xml",
+    },
+]
+
+# Backwards compat — used by fetch_all_products and build_feed
+STORE_URL = MARKETS[0]["store_url"]
+OUTPUT_FILE = MARKETS[0]["output_file"]
 
 # Map Finnish product types → Google taxonomy
 CATEGORY_MAP = [
@@ -230,29 +256,33 @@ def build_feed(products: list) -> tuple[ET.ElementTree, dict]:
     return ET.ElementTree(rss), stats
 
 
-def push_to_sheets(products: list) -> None:
-    """Pushaa tuotedata Google Sheetsiin."""
-    print("Pushataan Google Sheetsiin...")
-
+def get_sheets_client():
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-
-    # GitHub Actions: credentials ympäristömuuttujasta
-    # Lokaali ajo: credentials tiedostosta
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
     if creds_json:
         import json as _json
         creds = Credentials.from_service_account_info(_json.loads(creds_json), scopes=scopes)
     else:
         creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
+    return gspread.authorize(creds)
 
-    client = gspread.authorize(creds)
-    sheet = client.open_by_key(SPREADSHEET_ID).sheet1
+
+def push_to_sheets(products: list, store_url: str, sheet_tab: str, currency: str, spreadsheet_id: str) -> None:
+    print(f"Pushataan Google Sheetsiin ({sheet_tab})...")
+
+    client = get_sheets_client()
+    spreadsheet = client.open_by_key(spreadsheet_id)
+
+    try:
+        sheet = spreadsheet.worksheet(sheet_tab)
+    except gspread.exceptions.WorksheetNotFound:
+        sheet = spreadsheet.add_worksheet(title=sheet_tab, rows=2000, cols=20)
 
     headers = [
         "id", "title", "description", "link", "image_link",
         "additional_image_link", "availability", "price", "sale_price",
         "brand", "condition", "google_product_category",
-        "gender", "size", "color", "custom_label_0", "custom_label_1",
+        "gender", "age_group", "size", "color", "custom_label_0", "custom_label_1",
     ]
 
     rows = [headers]
@@ -281,17 +311,17 @@ def push_to_sheets(products: list) -> None:
         additional_imgs = ",".join(img["src"] for img in images[1:5])
 
         if compare_at and compare_at > price:
-            price_str = f"{compare_at:.2f} EUR"
-            sale_price_str = f"{price:.2f} EUR"
+            price_str = f"{compare_at:.2f} {currency}"
+            sale_price_str = f"{price:.2f} {currency}"
         else:
-            price_str = f"{price:.2f} EUR"
+            price_str = f"{price:.2f} {currency}"
             sale_price_str = ""
 
         rows.append([
             str(product["id"]),
             f"Pomar {product['title']}",
             desc or product["title"],
-            f"{STORE_URL}/products/{product['handle']}",
+            f"{store_url}/products/{product['handle']}",
             images[0]["src"] if images else "",
             additional_imgs,
             availability,
@@ -301,6 +331,7 @@ def push_to_sheets(products: list) -> None:
             "new",
             get_google_category(product.get("product_type", "")),
             gender,
+            "adult",
             size_range or "",
             "/".join(colors) if colors else "",
             gender,
@@ -309,7 +340,7 @@ def push_to_sheets(products: list) -> None:
 
     sheet.clear()
     sheet.update(rows)
-    print(f"Google Sheets päivitetty: {len(rows) - 1} tuotetta")
+    print(f"Google Sheets päivitetty ({sheet_tab}): {len(rows) - 1} tuotetta")
 
 
 def prettify(tree: ET.ElementTree) -> bytes:
@@ -320,31 +351,34 @@ def prettify(tree: ET.ElementTree) -> bytes:
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    print("Fetching products from pomar.fi…")
-    products = fetch_all_products()
-    print(f"Found {len(products)} products\n")
+    for market in MARKETS:
+        store_url = market["store_url"]
+        sheet_tab = market["sheet_tab"]
+        currency = market["currency"]
+        output_file = market["output_file"]
 
-    tree, stats = build_feed(products)
+        print(f"\n{'='*50}")
+        print(f"Markkina: {sheet_tab} ({store_url})")
+        print(f"{'='*50}")
 
-    with open(OUTPUT_FILE, "wb") as fh:
-        fh.write(prettify(tree))
+        # Patch global so fetch_all_products and build_feed use right URL
+        global STORE_URL, OUTPUT_FILE
+        STORE_URL = store_url
+        OUTPUT_FILE = output_file
 
-    print(f"Feed written to: {OUTPUT_FILE}")
-    print(f"Total items:     {stats['total']}\n")
+        print(f"Fetching products from {store_url}…")
+        products = fetch_all_products()
+        print(f"Found {len(products)} products\n")
 
-    print("Breakdown by price segment:")
-    print(f"  Outlet:       {stats.get('outlet', 0)}")
-    print(f"  Sale:         {stats.get('sale', 0)}")
-    print(f"  Normal price: {stats.get('normal price', 0)}\n")
+        tree, stats = build_feed(products)
 
-    print("Breakdown by gender:")
-    print(f"  Female: {stats.get('female', 0)}")
-    print(f"  Male:   {stats.get('male', 0)}")
-    print(f"  Unisex: {stats.get('unisex', 0)}\n")
+        with open(output_file, "wb") as fh:
+            fh.write(prettify(tree))
 
-    print(f"Seuraava askel: lataa {OUTPUT_FILE} Shopify Admin → Content → Files\n")
+        print(f"Feed written to: {output_file}")
+        print(f"Total items:     {stats['total']}")
 
-    push_to_sheets(products)
+        push_to_sheets(products, store_url, sheet_tab, currency, market["spreadsheet_id"])
 
 
 if __name__ == "__main__":
